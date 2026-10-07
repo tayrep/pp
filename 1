@@ -1,0 +1,136 @@
+#include <iostream>
+#include <Windows.h>
+#include <process.h>
+
+const int ROWS = 10;
+const int COLS = 11;
+const int COUNT = ROWS * COLS;
+const int NTHREAD = 4;
+const int K = 7; // заданное число (делитель)
+
+DWORD mainID{ GetCurrentThreadId() };
+
+// Структура для передачи данных в поток
+struct INFORM
+{
+    int* arr;      // указатель на начало участка
+    int count;     // количество элементов в участке
+    int k;         // делитель
+    int result;    // результат: количество чисел, некратных k
+};
+
+// Последовательный подсчёт количества чисел, некратных k
+int countNotMultiple(int* arr, int size, int k)
+{
+    int result = 0;
+    for (int i = 0; i < size; ++i)
+        if (arr[i] % k != 0)
+            ++result;
+    return result;
+}
+
+// Потоковая функция WinAPI
+unsigned _stdcall countNotMultipleWinAPI(void* param)
+{
+    INFORM* inform = (INFORM*)param;
+
+    inform->result = countNotMultiple(inform->arr, inform->count, inform->k);
+
+    DWORD currentID{ GetCurrentThreadId() };
+    std::cout << "id from winAPI: " << currentID
+              << " | elements: " << inform->count
+              << " | not multiple of " << inform->k
+              << " = " << inform->result << "\n";
+
+    if (currentID != mainID) {
+        _endthreadex(0);
+    }
+    return 0;
+}
+
+// Параллельный подсчёт
+int countNotMultipleParallel(int* arr, int total, int k)
+{
+    HANDLE thr[NTHREAD - 1]{};
+    INFORM informs[NTHREAD]{};
+    int chunk = total / NTHREAD;
+
+    for (int i = 0; i < NTHREAD; ++i)
+    {
+        informs[i].arr = arr + chunk * i;
+        informs[i].count = chunk;
+        informs[i].k = k;
+        informs[i].result = 0;
+
+        if (i < NTHREAD - 1)
+        {
+            // Запускаем NTHREAD-1 поток, последний обработает главный поток
+            thr[i] = (HANDLE)_beginthreadex(
+                nullptr, 0, &countNotMultipleWinAPI, &informs[i], 0, nullptr);
+        }
+        else
+        {
+            // Последнему потоку отдаём остаток элементов
+            informs[i].count = chunk + total % NTHREAD;
+        }
+    }
+
+    // Главный поток обрабатывает последнюю часть
+    countNotMultipleWinAPI(informs + NTHREAD - 1);
+
+    int global_result{ informs[NTHREAD - 1].result };
+
+    // Ожидание завершения потоков и суммирование результатов
+    for (int i = 0; i < NTHREAD - 1; ++i)
+    {
+        WaitForSingleObject(thr[i], INFINITE);
+        CloseHandle(thr[i]);
+        global_result += informs[i].result;
+    }
+
+    return global_result;
+}
+
+// Инициализация матрицы случайными числами
+void init(int* arr, int size)
+{
+    for (int i = 0; i < size; ++i)
+        arr[i] = rand() % 100;
+}
+
+// Вывод матрицы (для наглядности)
+void printMatrix(int* arr)
+{
+    for (int i = 0; i < ROWS; ++i)
+    {
+        for (int j = 0; j < COLS; ++j)
+            std::cout << arr[i * COLS + j] << "\t";
+        std::cout << "\n";
+    }
+}
+
+int main()
+{
+    setlocale(LC_ALL, "Russian");
+
+    std::cout << "mainID = " << mainID << "\n";
+
+    int matrix[COUNT]{};
+    srand(GetTickCount64());
+    init(matrix, COUNT);
+
+    std::cout << "\nМатрица " << ROWS << "x" << COLS << ":\n";
+    printMatrix(matrix);
+
+    std::cout << "\nЗаданное число k = " << K << "\n";
+
+    int seq = countNotMultiple(matrix, COUNT, K);
+    int par = countNotMultipleParallel(matrix, COUNT, K);
+
+    std::cout << "\nНепараллельно: количество чисел, некратных " << K
+              << " = " << seq << "\n";
+    std::cout << "Параллельно:   количество чисел, некратных " << K
+              << " = " << par << "\n";
+
+    return 0;
+}
